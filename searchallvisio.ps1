@@ -18,7 +18,6 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $resultsFile = Join-Path $scriptDir "searchresults.txt"
 $watchdogFile = Join-Path $env:TEMP "VisualLogicPromptWatchdog.ps1"
 
-# Create separate watchdog script to handle VisualLogic popup while main script is blocked
 @'
 Add-Type -AssemblyName System.Windows.Forms
 
@@ -26,14 +25,27 @@ while ($true) {
     try {
         $shell = New-Object -ComObject WScript.Shell
 
-        if ($shell.AppActivate("Select Controller for Database Creation (BD3)")) {
-            Start-Sleep -Milliseconds 300
+        $titles = @(
+            "Select Controller for Database Creation (BD1)",
+            "Select Controller for Database Creation (BD2)",
+            "Select Controller for Database Creation (BD3)",
+            "Select Controller for Database Creation (BD4)",
+            "Select Controller for Database Creation (BD5)",
+            "Select Controller for Database Creation (BD6)",
+            "Select Controller for Database Creation (BD7)",
+            "Select Controller for Database Creation (BD8)",
+            "Select Controller for Database Creation (BD9)"
+        )
 
-            [System.Windows.Forms.SendKeys]::SendWait("{HOME}")
-            Start-Sleep -Milliseconds 200
-
-            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
-            Start-Sleep -Milliseconds 1000
+        foreach ($title in $titles) {
+            if ($shell.AppActivate($title)) {
+                Start-Sleep -Milliseconds 300
+                [System.Windows.Forms.SendKeys]::SendWait("{HOME}")
+                Start-Sleep -Milliseconds 200
+                [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+                Start-Sleep -Milliseconds 1000
+                break
+            }
         }
     } catch {}
 
