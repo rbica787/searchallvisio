@@ -16,23 +16,56 @@ if (-not (Test-Path $FolderPath)) {
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $resultsFile = Join-Path $scriptDir "searchresults.txt"
+$watchdogFile = Join-Path $env:TEMP "VisualLogicPromptWatchdog.ps1"
+
+# Create separate watchdog script to handle VisualLogic popup while main script is blocked
+@'
+Add-Type -AssemblyName System.Windows.Forms
+
+while ($true) {
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+
+        if ($shell.AppActivate("Select Controller for Database Creation (BD3)")) {
+            Start-Sleep -Milliseconds 300
+
+            [System.Windows.Forms.SendKeys]::SendWait("{HOME}")
+            Start-Sleep -Milliseconds 200
+
+            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+            Start-Sleep -Milliseconds 1000
+        }
+    } catch {}
+
+    Start-Sleep -Milliseconds 300
+}
+'@ | Set-Content -Path $watchdogFile -Encoding UTF8
+
+$watchdog = Start-Process powershell.exe `
+    -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdogFile`"" `
+    -PassThru
 
 if (Test-Path $resultsFile) {
-    Add-Content -Path $resultsFile -Value ""
-    Add-Content -Path $resultsFile -Value ""
+    Add-Content $resultsFile ""
+    Add-Content $resultsFile ""
 } else {
     New-Item -Path $resultsFile -ItemType File -Force | Out-Null
 }
 
-Add-Content -Path $resultsFile -Value "Search run: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Add-Content -Path $resultsFile -Value "Search string: $SearchString"
-Add-Content -Path $resultsFile -Value "Folder searched: $FolderPath"
-Add-Content -Path $resultsFile -Value "----------------------------------------"
+Add-Content $resultsFile "Search run: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+Add-Content $resultsFile "Search string: $SearchString"
+Add-Content $resultsFile "Folder searched: $FolderPath"
+Add-Content $resultsFile "----------------------------------------"
 
 $files = Get-ChildItem -Path $FolderPath -File -Recurse -Include *.vsd, *.vsdx -ErrorAction SilentlyContinue
 
 if (-not $files) {
     Write-Host "No Visio files found."
+
+    if ($watchdog -and -not $watchdog.HasExited) {
+        Stop-Process -Id $watchdog.Id -Force
+    }
+
     exit 0
 }
 
@@ -45,10 +78,10 @@ function Wait-ForVisioDocument {
 
     $attempts = 0
 
-    while ($attempts -lt 80) {
+    while ($attempts -lt 180) {
         try {
             if ($Document.Pages.Count -gt 0) {
-                Start-Sleep -Milliseconds 500
+                Start-Sleep -Milliseconds 700
                 return $true
             }
         } catch {}
@@ -66,28 +99,26 @@ function Test-ShapeForString {
         [string]$SearchString
     )
 
-    # Search visible shape text
+    $needle = $SearchString.ToLower()
+
     try {
-        if ($Shape.Text -and $Shape.Text.ToLower().Contains($SearchString.ToLower())) {
+        if ($Shape.Text -and $Shape.Text.ToLower().Contains($needle)) {
             return $true
         }
     } catch {}
 
-    # Search shape name
     try {
-        if ($Shape.Name -and $Shape.Name.ToLower().Contains($SearchString.ToLower())) {
+        if ($Shape.Name -and $Shape.Name.ToLower().Contains($needle)) {
             return $true
         }
     } catch {}
 
-    # Search shape name used in Visio UI
     try {
-        if ($Shape.NameU -and $Shape.NameU.ToLower().Contains($SearchString.ToLower())) {
+        if ($Shape.NameU -and $Shape.NameU.ToLower().Contains($needle)) {
             return $true
         }
     } catch {}
 
-    # Search Shape Data / Custom Properties
     try {
         $sectionExists = $Shape.SectionExists(243, 0)
 
@@ -99,11 +130,11 @@ function Test-ShapeForString {
                     $label = $Shape.CellsSRC(243, $i, 2).ResultStr("")
                     $value = $Shape.CellsSRC(243, $i, 0).ResultStr("")
 
-                    if ($label -and $label.ToLower().Contains($SearchString.ToLower())) {
+                    if ($label -and $label.ToLower().Contains($needle)) {
                         return $true
                     }
 
-                    if ($value -and $value.ToLower().Contains($SearchString.ToLower())) {
+                    if ($value -and $value.ToLower().Contains($needle)) {
                         return $true
                     }
                 } catch {}
@@ -111,7 +142,6 @@ function Test-ShapeForString {
         }
     } catch {}
 
-    # Search grouped shapes recursively
     try {
         foreach ($subShape in $Shape.Shapes) {
             if (Test-ShapeForString -Shape $subShape -SearchString $SearchString) {
@@ -144,44 +174,54 @@ function Close-VisioDocument {
     param($Document)
 
     try {
-        $Document.Saved = $true
-    } catch {}
-
-    try {
         $Document.Close()
-    } catch {}
+        Start-Sleep -Milliseconds 700
+    } catch {
+        Write-Warning "Could not close document."
+    }
 }
 
-foreach ($file in $files) {
+try {
+    foreach ($file in $files) {
 
-    Write-Host "Opening: $($file.FullName)"
+        Write-Host "Opening: $($file.FullName)"
 
-    try {
-        $doc = $visio.Documents.Open($file.FullName)
-    } catch {
-        Write-Warning "Could not open: $($file.FullName)"
-        continue
+        try {
+            $doc = $visio.Documents.Open($file.FullName)
+        } catch {
+            Write-Warning "Could not open: $($file.FullName)"
+            continue
+        }
+
+        $loaded = Wait-ForVisioDocument -Document $doc
+
+        if (-not $loaded) {
+            Write-Warning "File did not fully load: $($file.Name)"
+            Close-VisioDocument -Document $doc
+            continue
+        }
+
+        $found = Test-DocumentForString -Document $doc -SearchString $SearchString
+
+        if ($found) {
+            Write-Host "FOUND in: $($file.Name)"
+            Add-Content -Path $resultsFile -Value $file.Name
+        }
+        else {
+            Write-Host "Not found in: $($file.Name). Closing file."
+            Close-VisioDocument -Document $doc
+        }
+
+        Start-Sleep -Milliseconds 500
+    }
+}
+finally {
+    if ($watchdog -and -not $watchdog.HasExited) {
+        Stop-Process -Id $watchdog.Id -Force
     }
 
-    $loaded = Wait-ForVisioDocument -Document $doc
-
-    if (-not $loaded) {
-        Write-Warning "File did not fully load: $($file.Name)"
-        Close-VisioDocument -Document $doc
-        continue
-    }
-
-    $found = Test-DocumentForString -Document $doc -SearchString $SearchString
-
-    if ($found) {
-        Write-Host "FOUND in: $($file.Name)"
-        Add-Content -Path $resultsFile -Value $file.Name
-
-        # Leave matching Visio document open
-    }
-    else {
-        Write-Host "Not found in: $($file.Name). Closing file."
-        Close-VisioDocument -Document $doc
+    if (Test-Path $watchdogFile) {
+        Remove-Item $watchdogFile -Force -ErrorAction SilentlyContinue
     }
 }
 
