@@ -2,8 +2,8 @@
 # EDIT THESE THREE VALUES ONLY
 # ==========================
 
-$FolderPath = "C:\Alerton\Compass\2.0\SYSERCO\BACETH\ddc"
-$SearchString = "hello"
+$FolderPath = "C:\Alerton\Compass\2.0\SYSERCO\CPOL2\ddc"
+$SearchString = "2211"
 
 # Set to $true to search subfolders
 # Set to $false to search only this folder
@@ -107,9 +107,7 @@ if (-not $files) {
     exit 0
 }
 
-$visio = New-Object -ComObject Visio.Application
-$visio.Visible = $true
-$visio.AlertResponse = 7
+$visio = $null
 
 function Wait-ForVisioDocument {
     param($Document)
@@ -220,6 +218,10 @@ function Close-VisioDocument {
 }
 
 try {
+    $visio = New-Object -ComObject Visio.Application
+    $visio.Visible = $true
+    $visio.AlertResponse = 7
+
     foreach ($file in $files) {
 
         $filesScanned++
@@ -251,9 +253,10 @@ try {
             Add-Content -LiteralPath $resultsFile $file.Name
         }
         else {
-            Write-Host "Not found in: $($file.Name). Closing file."
-            Close-VisioDocument -Document $doc
+            Write-Host "Not found in: $($file.Name)."
         }
+
+        Close-VisioDocument -Document $doc
 
         Start-Sleep -Milliseconds 500
     }
@@ -263,6 +266,35 @@ finally {
     Add-Content -LiteralPath $resultsFile "Files scanned: $filesScanned"
     Add-Content -LiteralPath $resultsFile "Matches found: $matchesFound"
     Add-Content -LiteralPath $resultsFile "Search complete."
+
+    try {
+        if ($visio) {
+            for ($i = $visio.Documents.Count; $i -ge 1; $i--) {
+                try {
+                    $visio.Documents.Item($i).Close()
+                } catch {}
+            }
+
+            Start-Sleep -Seconds 1
+
+            try {
+                $visio.Quit()
+            } catch {}
+
+            try {
+                [System.Runtime.Interopservices.Marshal]::ReleaseComObject($visio) | Out-Null
+            } catch {}
+
+            $visio = $null
+
+            [GC]::Collect()
+            [GC]::WaitForPendingFinalizers()
+        }
+    } catch {}
+
+    try {
+        Get-Process VISIO -ErrorAction SilentlyContinue | Stop-Process -Force
+    } catch {}
 
     if ($watchdog -and -not $watchdog.HasExited) {
         Stop-Process -Id $watchdog.Id -Force
