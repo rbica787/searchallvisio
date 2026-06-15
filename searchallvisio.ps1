@@ -2,18 +2,18 @@
 # EDIT THESE THREE VALUES ONLY
 # ==========================
 
-$FolderPath = "C:\Alerton\Compass\2.0\SYSERCO\CPOL2\ddc"
-$SearchString = "2211"
+$FolderPath = "C:\Alerton\Compass\2.0\SYSERCO\BACETH\ddc"
+$SearchString = "hello"
 
 # Set to $true to search subfolders
-# Set to $false to search only the folder above
+# Set to $false to search only this folder
 $RecursiveSearch = $true
 
 # ==========================
 # DO NOT EDIT BELOW THIS LINE
 # ==========================
 
-if (-not (Test-Path $FolderPath)) {
+if (-not (Test-Path -LiteralPath $FolderPath)) {
     Write-Error "Folder not found: $FolderPath"
     exit 1
 }
@@ -55,43 +55,54 @@ while ($true) {
 
     Start-Sleep -Milliseconds 300
 }
-'@ | Set-Content -Path $watchdogFile -Encoding UTF8
+'@ | Set-Content -LiteralPath $watchdogFile -Encoding UTF8
 
 $watchdog = Start-Process powershell.exe `
     -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdogFile`"" `
     -PassThru
 
-if (Test-Path $resultsFile) {
-    Add-Content $resultsFile ""
-    Add-Content $resultsFile ""
+if (Test-Path -LiteralPath $resultsFile) {
+    Add-Content -LiteralPath $resultsFile ""
+    Add-Content -LiteralPath $resultsFile ""
 } else {
     New-Item -Path $resultsFile -ItemType File -Force | Out-Null
 }
 
-Add-Content $resultsFile "Search run: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Add-Content $resultsFile "Search string: $SearchString"
-Add-Content $resultsFile "Folder searched: $FolderPath"
-Add-Content $resultsFile "Recursive search: $RecursiveSearch"
-Add-Content $resultsFile "----------------------------------------"
+Add-Content -LiteralPath $resultsFile "Search run: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+Add-Content -LiteralPath $resultsFile "Search string: $SearchString"
+Add-Content -LiteralPath $resultsFile "Folder searched: $FolderPath"
+Add-Content -LiteralPath $resultsFile "Recursive search: $RecursiveSearch"
+Add-Content -LiteralPath $resultsFile "----------------------------------------"
 
 if ($RecursiveSearch) {
-    $files = Get-ChildItem -Path $FolderPath -File -Recurse -Include *.vsd, *.vsdx -ErrorAction SilentlyContinue
+    $files = Get-ChildItem -LiteralPath $FolderPath -File -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in ".vsd", ".vsdx" }
 } else {
-    $files = Get-ChildItem -Path $FolderPath -File -Include *.vsd, *.vsdx -ErrorAction SilentlyContinue
+    $files = Get-ChildItem -LiteralPath $FolderPath -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in ".vsd", ".vsdx" }
 }
 
 $filesScanned = 0
+$matchesFound = 0
 
 if (-not $files) {
     Write-Host "No Visio files found."
 
-    Add-Content $resultsFile "No Visio files found."
-    Add-Content $resultsFile "Files scanned: 0"
-    Add-Content $resultsFile "----------------------------------------"
+    Add-Content -LiteralPath $resultsFile "No Visio files found."
+    Add-Content -LiteralPath $resultsFile "----------------------------------------"
+    Add-Content -LiteralPath $resultsFile "Files scanned: 0"
+    Add-Content -LiteralPath $resultsFile "Matches found: 0"
+    Add-Content -LiteralPath $resultsFile "Search complete."
 
     if ($watchdog -and -not $watchdog.HasExited) {
         Stop-Process -Id $watchdog.Id -Force
     }
+
+    try {
+        if ($watchdogFile -and (Test-Path -LiteralPath $watchdogFile)) {
+            Remove-Item -LiteralPath $watchdogFile -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
 
     exit 0
 }
@@ -219,7 +230,7 @@ try {
             $doc = $visio.Documents.Open($file.FullName)
         } catch {
             Write-Warning "Could not open: $($file.FullName)"
-            Add-Content -Path $resultsFile -Value "Could not open: $($file.Name)"
+            Add-Content -LiteralPath $resultsFile "Could not open: $($file.Name)"
             continue
         }
 
@@ -227,7 +238,7 @@ try {
 
         if (-not $loaded) {
             Write-Warning "File did not fully load: $($file.Name)"
-            Add-Content -Path $resultsFile -Value "File did not fully load: $($file.Name)"
+            Add-Content -LiteralPath $resultsFile "File did not fully load: $($file.Name)"
             Close-VisioDocument -Document $doc
             continue
         }
@@ -235,8 +246,9 @@ try {
         $found = Test-DocumentForString -Document $doc -SearchString $SearchString
 
         if ($found) {
+            $matchesFound++
             Write-Host "FOUND in: $($file.Name)"
-            Add-Content -Path $resultsFile -Value $file.Name
+            Add-Content -LiteralPath $resultsFile $file.Name
         }
         else {
             Write-Host "Not found in: $($file.Name). Closing file."
@@ -247,19 +259,23 @@ try {
     }
 }
 finally {
-    Add-Content $resultsFile "----------------------------------------"
-    Add-Content $resultsFile "Files scanned: $filesScanned"
-    Add-Content $resultsFile "Search complete."
+    Add-Content -LiteralPath $resultsFile "----------------------------------------"
+    Add-Content -LiteralPath $resultsFile "Files scanned: $filesScanned"
+    Add-Content -LiteralPath $resultsFile "Matches found: $matchesFound"
+    Add-Content -LiteralPath $resultsFile "Search complete."
 
     if ($watchdog -and -not $watchdog.HasExited) {
         Stop-Process -Id $watchdog.Id -Force
     }
 
-    if (Test-Path $watchdogFile) {
-        Remove-Item $watchdogFile -Force -ErrorAction SilentlyContinue
-    }
+    try {
+        if ($watchdogFile -and (Test-Path -LiteralPath $watchdogFile)) {
+            Remove-Item -LiteralPath $watchdogFile -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
 }
 
 Write-Host "Search complete."
 Write-Host "Files scanned: $filesScanned"
+Write-Host "Matches found: $matchesFound"
 Write-Host "Results saved to: $resultsFile"
