@@ -1,9 +1,13 @@
 # ==========================
-# EDIT THESE TWO VALUES ONLY
+# EDIT THESE THREE VALUES ONLY
 # ==========================
 
 $FolderPath = "C:\Alerton\Compass\2.0\SYSERCO\CPOL2\ddc"
 $SearchString = "2211"
+
+# Set to $true to search subfolders
+# Set to $false to search only the folder above
+$RecursiveSearch = $true
 
 # ==========================
 # DO NOT EDIT BELOW THIS LINE
@@ -67,12 +71,23 @@ if (Test-Path $resultsFile) {
 Add-Content $resultsFile "Search run: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Add-Content $resultsFile "Search string: $SearchString"
 Add-Content $resultsFile "Folder searched: $FolderPath"
+Add-Content $resultsFile "Recursive search: $RecursiveSearch"
 Add-Content $resultsFile "----------------------------------------"
 
-$files = Get-ChildItem -Path $FolderPath -File -Recurse -Include *.vsd, *.vsdx -ErrorAction SilentlyContinue
+if ($RecursiveSearch) {
+    $files = Get-ChildItem -Path $FolderPath -File -Recurse -Include *.vsd, *.vsdx -ErrorAction SilentlyContinue
+} else {
+    $files = Get-ChildItem -Path $FolderPath -File -Include *.vsd, *.vsdx -ErrorAction SilentlyContinue
+}
+
+$filesScanned = 0
 
 if (-not $files) {
     Write-Host "No Visio files found."
+
+    Add-Content $resultsFile "No Visio files found."
+    Add-Content $resultsFile "Files scanned: 0"
+    Add-Content $resultsFile "----------------------------------------"
 
     if ($watchdog -and -not $watchdog.HasExited) {
         Stop-Process -Id $watchdog.Id -Force
@@ -196,12 +211,15 @@ function Close-VisioDocument {
 try {
     foreach ($file in $files) {
 
+        $filesScanned++
+
         Write-Host "Opening: $($file.FullName)"
 
         try {
             $doc = $visio.Documents.Open($file.FullName)
         } catch {
             Write-Warning "Could not open: $($file.FullName)"
+            Add-Content -Path $resultsFile -Value "Could not open: $($file.Name)"
             continue
         }
 
@@ -209,6 +227,7 @@ try {
 
         if (-not $loaded) {
             Write-Warning "File did not fully load: $($file.Name)"
+            Add-Content -Path $resultsFile -Value "File did not fully load: $($file.Name)"
             Close-VisioDocument -Document $doc
             continue
         }
@@ -228,6 +247,10 @@ try {
     }
 }
 finally {
+    Add-Content $resultsFile "----------------------------------------"
+    Add-Content $resultsFile "Files scanned: $filesScanned"
+    Add-Content $resultsFile "Search complete."
+
     if ($watchdog -and -not $watchdog.HasExited) {
         Stop-Process -Id $watchdog.Id -Force
     }
@@ -238,4 +261,5 @@ finally {
 }
 
 Write-Host "Search complete."
+Write-Host "Files scanned: $filesScanned"
 Write-Host "Results saved to: $resultsFile"
