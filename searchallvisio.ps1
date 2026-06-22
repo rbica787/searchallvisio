@@ -2,14 +2,14 @@
 # EDIT THESE VALUES ONLY
 # ==========================
 
-$FolderPath = "C:\Alerton\Compass\2.0\SYSERCO\BACETH\ddc"
-$SearchString = "hello"
+$FolderPath = "C:\Alerton\Compass\2.0\SYSERCO\CPOL2\ddc"
+$SearchString = "2211"
 
 # Set to $true to search subfolders
 # Set to $false to search only this folder
 $RecursiveSearch = $true
 
-# Save extracted XML copies for files where a match is found
+# Save extracted page XML copies for files where a match is found
 $SaveMatchingXml = $true
 
 # ==========================
@@ -42,7 +42,8 @@ Add-Content -LiteralPath $resultsFile "Search run: $(Get-Date -Format 'yyyy-MM-d
 Add-Content -LiteralPath $resultsFile "Search string: $SearchString"
 Add-Content -LiteralPath $resultsFile "Folder searched: $FolderPath"
 Add-Content -LiteralPath $resultsFile "Recursive search: $RecursiveSearch"
-Add-Content -LiteralPath $resultsFile "Search method: Direct .vsdx XML parsing"
+Add-Content -LiteralPath $resultsFile "Search method: Direct .vsdx page XML parsing only"
+Add-Content -LiteralPath $resultsFile "Master pages ignored: True"
 Add-Content -LiteralPath $resultsFile "----------------------------------------"
 
 if ($RecursiveSearch) {
@@ -53,69 +54,6 @@ if ($RecursiveSearch) {
 
 $filesScanned = 0
 $matchesFound = 0
-
-function Convert-XmlToSearchText {
-    param(
-        [System.Xml.XmlNode]$Node,
-        [System.Text.StringBuilder]$Builder
-    )
-
-    if ($null -eq $Node) {
-        return
-    }
-
-    if ($Node.Value) {
-        [void]$Builder.AppendLine($Node.Value)
-    }
-
-    if ($Node.Attributes) {
-        foreach ($attr in $Node.Attributes) {
-            if ($attr.Name) {
-                [void]$Builder.AppendLine($attr.Name)
-            }
-
-            if ($attr.Value) {
-                [void]$Builder.AppendLine($attr.Value)
-            }
-        }
-    }
-
-    foreach ($child in $Node.ChildNodes) {
-        Convert-XmlToSearchText -Node $child -Builder $Builder
-    }
-}
-
-function Test-XmlTextForSearchString {
-    param(
-        [string]$XmlText,
-        [string]$SearchString
-    )
-
-    $needle = $SearchString.ToLower()
-
-    # Fast raw XML check first
-    if ($XmlText.ToLower().Contains($needle)) {
-        return $true
-    }
-
-    # Parsed XML check for text nodes and attributes
-    try {
-        [xml]$xml = $XmlText
-
-        $builder = New-Object System.Text.StringBuilder
-        Convert-XmlToSearchText -Node $xml -Builder $builder
-
-        $searchBlob = $builder.ToString().ToLower()
-
-        if ($searchBlob.Contains($needle)) {
-            return $true
-        }
-    } catch {
-        # If XML parsing fails, raw text check already happened.
-    }
-
-    return $false
-}
 
 function Save-MatchingXmlEntry {
     param(
@@ -138,7 +76,6 @@ function Save-MatchingXmlEntry {
     $entryName = $entryName -replace '[\\:*?"<>|]', '_'
 
     $xmlPath = Join-Path $drawingFolder $entryName
-
     Set-Content -LiteralPath $xmlPath -Value $XmlText -Encoding UTF8
 }
 
@@ -152,31 +89,23 @@ function Test-VsdxForSearchString {
 
     $archive = $null
     $matchedEntries = @()
+    $needle = $SearchString.ToLower()
 
     try {
         $archive = [System.IO.Compression.ZipFile]::OpenRead($File.FullName)
 
         foreach ($entry in $archive.Entries) {
 
-            # Only inspect XML files inside the .vsdx package
-            if (-not $entry.FullName.ToLower().EndsWith(".xml")) {
-                continue
-            }
-
-            # These are the most relevant Visio XML areas:
-            # visio/pages/page*.xml     = page shapes and text
-            # visio/masters/master*.xml = master shapes
-            # visio/document.xml        = document-level data
-            # docProps/*.xml            = file properties
             $entryNameLower = $entry.FullName.ToLower()
 
-            $isRelevantXml =
-                $entryNameLower.StartsWith("visio/pages/") -or
-                $entryNameLower.StartsWith("visio/masters/") -or
-                $entryNameLower -eq "visio/document.xml" -or
-                $entryNameLower.StartsWith("docprops/")
-
-            if (-not $isRelevantXml) {
+            # ONLY search actual drawing pages.
+            # This intentionally ignores:
+            # visio/masters/master*.xml
+            # visio/document.xml
+            # docProps/*.xml
+            # theme XML
+            # relationship XML
+            if ($entryNameLower -notmatch '^visio/pages/page[0-9]+\.xml$') {
                 continue
             }
 
@@ -187,7 +116,7 @@ function Test-VsdxForSearchString {
                 $reader.Close()
                 $stream.Close()
 
-                if (Test-XmlTextForSearchString -XmlText $xmlText -SearchString $SearchString) {
+                if ($xmlText.ToLower().Contains($needle)) {
                     $matchedEntries += $entry.FullName
 
                     if ($SaveMatchingXml) {
@@ -234,7 +163,7 @@ if (-not $files) {
 foreach ($file in $files) {
     $filesScanned++
 
-    Write-Host "Scanning XML: $($file.FullName)"
+    Write-Host "Scanning page XML only: $($file.FullName)"
 
     $result = Test-VsdxForSearchString `
         -File $file `
@@ -255,7 +184,7 @@ foreach ($file in $files) {
         Add-Content -LiteralPath $resultsFile $file.Name
 
         foreach ($entry in $result.Entries) {
-            Add-Content -LiteralPath $resultsFile "    XML match: $entry"
+            Add-Content -LiteralPath $resultsFile "    Page XML match: $entry"
         }
     } else {
         Write-Host "Not found in: $($file.Name)."
@@ -278,5 +207,5 @@ Write-Host "Matches found: $matchesFound"
 Write-Host "Results saved to: $resultsFile"
 
 if ($SaveMatchingXml) {
-    Write-Host "Matching XML saved to: $xmlOutputRoot"
+    Write-Host "Matching page XML saved to: $xmlOutputRoot"
 }
