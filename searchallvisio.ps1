@@ -1,13 +1,16 @@
 # ==========================
-# EDIT THESE THREE VALUES ONLY
+# EDIT THESE VALUES ONLY
 # ==========================
 
-$FolderPath = "C:\Alerton\Compass\2.0\SYSERCO\CPOL2\ddc"
-$SearchString = "2211"
+$FolderPath = "C:\Alerton\Compass\2.0\SYSERCO\BACETH\ddc"
+$SearchString = "hello"
 
 # Set to $true to search subfolders
 # Set to $false to search only this folder
 $RecursiveSearch = $true
+
+# Save extracted XML copies for files where a match is found
+$SaveMatchingXml = $true
 
 # ==========================
 # DO NOT EDIT BELOW THIS LINE
@@ -18,48 +21,15 @@ if (-not (Test-Path -LiteralPath $FolderPath)) {
     exit 1
 }
 
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $resultsFile = Join-Path $scriptDir "searchresults.txt"
-$watchdogFile = Join-Path $env:TEMP "VisualLogicPromptWatchdog.ps1"
+$xmlOutputRoot = Join-Path $scriptDir "ExtractedXmlMatches"
 
-@'
-Add-Type -AssemblyName System.Windows.Forms
-
-while ($true) {
-    try {
-        $shell = New-Object -ComObject WScript.Shell
-
-        $titles = @(
-            "Select Controller for Database Creation (BD1)",
-            "Select Controller for Database Creation (BD2)",
-            "Select Controller for Database Creation (BD3)",
-            "Select Controller for Database Creation (BD4)",
-            "Select Controller for Database Creation (BD5)",
-            "Select Controller for Database Creation (BD6)",
-            "Select Controller for Database Creation (BD7)",
-            "Select Controller for Database Creation (BD8)",
-            "Select Controller for Database Creation (BD9)"
-        )
-
-        foreach ($title in $titles) {
-            if ($shell.AppActivate($title)) {
-                Start-Sleep -Milliseconds 300
-                [System.Windows.Forms.SendKeys]::SendWait("{HOME}")
-                Start-Sleep -Milliseconds 200
-                [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
-                Start-Sleep -Milliseconds 1000
-                break
-            }
-        }
-    } catch {}
-
-    Start-Sleep -Milliseconds 300
+if ($SaveMatchingXml -and -not (Test-Path -LiteralPath $xmlOutputRoot)) {
+    New-Item -Path $xmlOutputRoot -ItemType Directory -Force | Out-Null
 }
-'@ | Set-Content -LiteralPath $watchdogFile -Encoding UTF8
-
-$watchdog = Start-Process powershell.exe `
-    -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdogFile`"" `
-    -PassThru
 
 if (Test-Path -LiteralPath $resultsFile) {
     Add-Content -LiteralPath $resultsFile ""
@@ -72,242 +42,241 @@ Add-Content -LiteralPath $resultsFile "Search run: $(Get-Date -Format 'yyyy-MM-d
 Add-Content -LiteralPath $resultsFile "Search string: $SearchString"
 Add-Content -LiteralPath $resultsFile "Folder searched: $FolderPath"
 Add-Content -LiteralPath $resultsFile "Recursive search: $RecursiveSearch"
+Add-Content -LiteralPath $resultsFile "Search method: Direct .vsdx XML parsing"
 Add-Content -LiteralPath $resultsFile "----------------------------------------"
 
 if ($RecursiveSearch) {
-    $files = Get-ChildItem -LiteralPath $FolderPath -File -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -in ".vsd", ".vsdx" }
+    $files = Get-ChildItem -LiteralPath $FolderPath -File -Recurse -Filter "*.vsdx" -ErrorAction SilentlyContinue
 } else {
-    $files = Get-ChildItem -LiteralPath $FolderPath -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -in ".vsd", ".vsdx" }
+    $files = Get-ChildItem -LiteralPath $FolderPath -File -Filter "*.vsdx" -ErrorAction SilentlyContinue
 }
 
 $filesScanned = 0
 $matchesFound = 0
 
-if (-not $files) {
-    Write-Host "No Visio files found."
-
-    Add-Content -LiteralPath $resultsFile "No Visio files found."
-    Add-Content -LiteralPath $resultsFile "----------------------------------------"
-    Add-Content -LiteralPath $resultsFile "Files scanned: 0"
-    Add-Content -LiteralPath $resultsFile "Matches found: 0"
-    Add-Content -LiteralPath $resultsFile "Search complete."
-
-    if ($watchdog -and -not $watchdog.HasExited) {
-        Stop-Process -Id $watchdog.Id -Force
-    }
-
-    try {
-        if ($watchdogFile -and (Test-Path -LiteralPath $watchdogFile)) {
-            Remove-Item -LiteralPath $watchdogFile -Force -ErrorAction SilentlyContinue
-        }
-    } catch {}
-
-    exit 0
-}
-
-$visio = $null
-
-function Wait-ForVisioDocument {
-    param($Document)
-
-    $attempts = 0
-
-    while ($attempts -lt 180) {
-        try {
-            if ($Document.Pages.Count -gt 0) {
-                Start-Sleep -Milliseconds 700
-                return $true
-            }
-        } catch {}
-
-        Start-Sleep -Milliseconds 500
-        $attempts++
-    }
-
-    return $false
-}
-
-function Test-ShapeForString {
+function Convert-XmlToSearchText {
     param(
-        $Shape,
+        [System.Xml.XmlNode]$Node,
+        [System.Text.StringBuilder]$Builder
+    )
+
+    if ($null -eq $Node) {
+        return
+    }
+
+    if ($Node.Value) {
+        [void]$Builder.AppendLine($Node.Value)
+    }
+
+    if ($Node.Attributes) {
+        foreach ($attr in $Node.Attributes) {
+            if ($attr.Name) {
+                [void]$Builder.AppendLine($attr.Name)
+            }
+
+            if ($attr.Value) {
+                [void]$Builder.AppendLine($attr.Value)
+            }
+        }
+    }
+
+    foreach ($child in $Node.ChildNodes) {
+        Convert-XmlToSearchText -Node $child -Builder $Builder
+    }
+}
+
+function Test-XmlTextForSearchString {
+    param(
+        [string]$XmlText,
         [string]$SearchString
     )
 
     $needle = $SearchString.ToLower()
 
+    # Fast raw XML check first
+    if ($XmlText.ToLower().Contains($needle)) {
+        return $true
+    }
+
+    # Parsed XML check for text nodes and attributes
     try {
-        if ($Shape.Text -and $Shape.Text.ToLower().Contains($needle)) {
+        [xml]$xml = $XmlText
+
+        $builder = New-Object System.Text.StringBuilder
+        Convert-XmlToSearchText -Node $xml -Builder $builder
+
+        $searchBlob = $builder.ToString().ToLower()
+
+        if ($searchBlob.Contains($needle)) {
             return $true
         }
-    } catch {}
-
-    try {
-        if ($Shape.Name -and $Shape.Name.ToLower().Contains($needle)) {
-            return $true
-        }
-    } catch {}
-
-    try {
-        if ($Shape.NameU -and $Shape.NameU.ToLower().Contains($needle)) {
-            return $true
-        }
-    } catch {}
-
-    try {
-        $sectionExists = $Shape.SectionExists(243, 0)
-
-        if ($sectionExists -ne 0) {
-            $rowCount = $Shape.RowCount(243)
-
-            for ($i = 0; $i -lt $rowCount; $i++) {
-                try {
-                    $label = $Shape.CellsSRC(243, $i, 2).ResultStr("")
-                    $value = $Shape.CellsSRC(243, $i, 0).ResultStr("")
-
-                    if ($label -and $label.ToLower().Contains($needle)) {
-                        return $true
-                    }
-
-                    if ($value -and $value.ToLower().Contains($needle)) {
-                        return $true
-                    }
-                } catch {}
-            }
-        }
-    } catch {}
-
-    try {
-        foreach ($subShape in $Shape.Shapes) {
-            if (Test-ShapeForString -Shape $subShape -SearchString $SearchString) {
-                return $true
-            }
-        }
-    } catch {}
+    } catch {
+        # If XML parsing fails, raw text check already happened.
+    }
 
     return $false
 }
 
-function Test-DocumentForString {
+function Save-MatchingXmlEntry {
     param(
-        $Document,
-        [string]$SearchString
+        [System.IO.Compression.ZipArchiveEntry]$Entry,
+        [string]$XmlText,
+        [string]$DrawingName,
+        [string]$OutputRoot
     )
 
-    foreach ($page in $Document.Pages) {
-        foreach ($shape in $page.Shapes) {
-            if (Test-ShapeForString -Shape $shape -SearchString $SearchString) {
-                return $true
-            }
-        }
+    $safeDrawingName = [System.IO.Path]::GetFileNameWithoutExtension($DrawingName)
+    $safeDrawingName = $safeDrawingName -replace '[\\/:*?"<>|]', '_'
+
+    $drawingFolder = Join-Path $OutputRoot $safeDrawingName
+
+    if (-not (Test-Path -LiteralPath $drawingFolder)) {
+        New-Item -Path $drawingFolder -ItemType Directory -Force | Out-Null
     }
 
-    return $false
+    $entryName = $Entry.FullName -replace '/', '_'
+    $entryName = $entryName -replace '[\\:*?"<>|]', '_'
+
+    $xmlPath = Join-Path $drawingFolder $entryName
+
+    Set-Content -LiteralPath $xmlPath -Value $XmlText -Encoding UTF8
 }
 
-function Close-VisioDocument {
-    param($Document)
+function Test-VsdxForSearchString {
+    param(
+        [System.IO.FileInfo]$File,
+        [string]$SearchString,
+        [bool]$SaveMatchingXml,
+        [string]$XmlOutputRoot
+    )
+
+    $archive = $null
+    $matchedEntries = @()
 
     try {
-        $Document.Close()
-        Start-Sleep -Milliseconds 700
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($File.FullName)
+
+        foreach ($entry in $archive.Entries) {
+
+            # Only inspect XML files inside the .vsdx package
+            if (-not $entry.FullName.ToLower().EndsWith(".xml")) {
+                continue
+            }
+
+            # These are the most relevant Visio XML areas:
+            # visio/pages/page*.xml     = page shapes and text
+            # visio/masters/master*.xml = master shapes
+            # visio/document.xml        = document-level data
+            # docProps/*.xml            = file properties
+            $entryNameLower = $entry.FullName.ToLower()
+
+            $isRelevantXml =
+                $entryNameLower.StartsWith("visio/pages/") -or
+                $entryNameLower.StartsWith("visio/masters/") -or
+                $entryNameLower -eq "visio/document.xml" -or
+                $entryNameLower.StartsWith("docprops/")
+
+            if (-not $isRelevantXml) {
+                continue
+            }
+
+            try {
+                $stream = $entry.Open()
+                $reader = New-Object System.IO.StreamReader($stream)
+                $xmlText = $reader.ReadToEnd()
+                $reader.Close()
+                $stream.Close()
+
+                if (Test-XmlTextForSearchString -XmlText $xmlText -SearchString $SearchString) {
+                    $matchedEntries += $entry.FullName
+
+                    if ($SaveMatchingXml) {
+                        Save-MatchingXmlEntry `
+                            -Entry $entry `
+                            -XmlText $xmlText `
+                            -DrawingName $File.Name `
+                            -OutputRoot $XmlOutputRoot
+                    }
+                }
+            } catch {}
+        }
     } catch {
-        Write-Warning "Could not close document."
+        return @{
+            Error = $true
+            Found = $false
+            Entries = @()
+        }
+    } finally {
+        if ($archive) {
+            $archive.Dispose()
+        }
+    }
+
+    return @{
+        Error = $false
+        Found = ($matchedEntries.Count -gt 0)
+        Entries = $matchedEntries
     }
 }
 
-try {
-    $visio = New-Object -ComObject Visio.Application
-    $visio.Visible = $true
-    $visio.AlertResponse = 7
+if (-not $files) {
+    Write-Host "No .vsdx files found."
 
-    foreach ($file in $files) {
-
-        $filesScanned++
-
-        Write-Host "Opening: $($file.FullName)"
-
-        try {
-            $doc = $visio.Documents.Open($file.FullName)
-        } catch {
-            Write-Warning "Could not open: $($file.FullName)"
-            Add-Content -LiteralPath $resultsFile "Could not open: $($file.Name)"
-            continue
-        }
-
-        $loaded = Wait-ForVisioDocument -Document $doc
-
-        if (-not $loaded) {
-            Write-Warning "File did not fully load: $($file.Name)"
-            Add-Content -LiteralPath $resultsFile "File did not fully load: $($file.Name)"
-            Close-VisioDocument -Document $doc
-            continue
-        }
-
-        $found = Test-DocumentForString -Document $doc -SearchString $SearchString
-
-        if ($found) {
-            $matchesFound++
-            Write-Host "FOUND in: $($file.Name)"
-            Add-Content -LiteralPath $resultsFile $file.Name
-        }
-        else {
-            Write-Host "Not found in: $($file.Name)."
-        }
-
-        Close-VisioDocument -Document $doc
-
-        Start-Sleep -Milliseconds 500
-    }
-}
-finally {
+    Add-Content -LiteralPath $resultsFile "No .vsdx files found."
     Add-Content -LiteralPath $resultsFile "----------------------------------------"
-    Add-Content -LiteralPath $resultsFile "Files scanned: $filesScanned"
-    Add-Content -LiteralPath $resultsFile "Matches found: $matchesFound"
+    Add-Content -LiteralPath $resultsFile "Files scanned: 0"
+    Add-Content -LiteralPath $resultsFile "Matches found: 0"
     Add-Content -LiteralPath $resultsFile "Search complete."
 
-    try {
-        if ($visio) {
-            for ($i = $visio.Documents.Count; $i -ge 1; $i--) {
-                try {
-                    $visio.Documents.Item($i).Close()
-                } catch {}
-            }
+    exit 0
+}
 
-            Start-Sleep -Seconds 1
+foreach ($file in $files) {
+    $filesScanned++
 
-            try {
-                $visio.Quit()
-            } catch {}
+    Write-Host "Scanning XML: $($file.FullName)"
 
-            try {
-                [System.Runtime.Interopservices.Marshal]::ReleaseComObject($visio) | Out-Null
-            } catch {}
+    $result = Test-VsdxForSearchString `
+        -File $file `
+        -SearchString $SearchString `
+        -SaveMatchingXml $SaveMatchingXml `
+        -XmlOutputRoot $xmlOutputRoot
 
-            $visio = $null
-
-            [GC]::Collect()
-            [GC]::WaitForPendingFinalizers()
-        }
-    } catch {}
-
-    try {
-        Get-Process VISIO -ErrorAction SilentlyContinue | Stop-Process -Force
-    } catch {}
-
-    if ($watchdog -and -not $watchdog.HasExited) {
-        Stop-Process -Id $watchdog.Id -Force
+    if ($result.Error) {
+        Write-Warning "Could not read as .vsdx package: $($file.FullName)"
+        Add-Content -LiteralPath $resultsFile "Could not read: $($file.Name)"
+        continue
     }
 
-    try {
-        if ($watchdogFile -and (Test-Path -LiteralPath $watchdogFile)) {
-            Remove-Item -LiteralPath $watchdogFile -Force -ErrorAction SilentlyContinue
+    if ($result.Found) {
+        $matchesFound++
+
+        Write-Host "FOUND in: $($file.Name)"
+        Add-Content -LiteralPath $resultsFile $file.Name
+
+        foreach ($entry in $result.Entries) {
+            Add-Content -LiteralPath $resultsFile "    XML match: $entry"
         }
-    } catch {}
+    } else {
+        Write-Host "Not found in: $($file.Name)."
+    }
 }
+
+Add-Content -LiteralPath $resultsFile "----------------------------------------"
+Add-Content -LiteralPath $resultsFile "Files scanned: $filesScanned"
+Add-Content -LiteralPath $resultsFile "Matches found: $matchesFound"
+
+if ($SaveMatchingXml) {
+    Add-Content -LiteralPath $resultsFile "Extracted matching XML folder: $xmlOutputRoot"
+}
+
+Add-Content -LiteralPath $resultsFile "Search complete."
 
 Write-Host "Search complete."
 Write-Host "Files scanned: $filesScanned"
 Write-Host "Matches found: $matchesFound"
 Write-Host "Results saved to: $resultsFile"
+
+if ($SaveMatchingXml) {
+    Write-Host "Matching XML saved to: $xmlOutputRoot"
+}
