@@ -1,27 +1,32 @@
 # ==========================
-# EDIT THESE VALUES ONLY
+# VSDX XML SEARCH SCRIPT
+# Searches page XML only
+# Master pages are ignored
 # ==========================
 
-$FolderPath = "C:\Alerton\Compass\2.0\SYSERCO\CPOL2\ddc"
-$SearchString = "2211"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-# Set to $true to search subfolders
-# Set to $false to search only this folder
-$RecursiveSearch = $true
+$FolderPath = Read-Host "Enter the folder path to search"
+$SearchString = Read-Host "Enter the search string"
 
-# Save extracted page XML copies for files where a match is found
+do {
+    $recursiveAnswer = Read-Host "Search subfolders recursively? Enter Y or N"
+    $recursiveAnswer = $recursiveAnswer.Trim().ToUpper()
+} while ($recursiveAnswer -ne "Y" -and $recursiveAnswer -ne "N")
+
+$RecursiveSearch = ($recursiveAnswer -eq "Y")
+
 $SaveMatchingXml = $true
-
-# ==========================
-# DO NOT EDIT BELOW THIS LINE
-# ==========================
 
 if (-not (Test-Path -LiteralPath $FolderPath)) {
     Write-Error "Folder not found: $FolderPath"
     exit 1
 }
 
-Add-Type -AssemblyName System.IO.Compression.FileSystem
+if ([string]::IsNullOrWhiteSpace($SearchString)) {
+    Write-Error "Search string cannot be blank."
+    exit 1
+}
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $resultsFile = Join-Path $scriptDir "searchresults.txt"
@@ -76,6 +81,7 @@ function Save-MatchingXmlEntry {
     $entryName = $entryName -replace '[\\:*?"<>|]', '_'
 
     $xmlPath = Join-Path $drawingFolder $entryName
+
     Set-Content -LiteralPath $xmlPath -Value $XmlText -Encoding UTF8
 }
 
@@ -95,16 +101,10 @@ function Test-VsdxForSearchString {
         $archive = [System.IO.Compression.ZipFile]::OpenRead($File.FullName)
 
         foreach ($entry in $archive.Entries) {
-
             $entryNameLower = $entry.FullName.ToLower()
 
             # ONLY search actual drawing pages.
-            # This intentionally ignores:
-            # visio/masters/master*.xml
-            # visio/document.xml
-            # docProps/*.xml
-            # theme XML
-            # relationship XML
+            # Master pages are intentionally ignored.
             if ($entryNameLower -notmatch '^visio/pages/page[0-9]+\.xml$') {
                 continue
             }
@@ -201,6 +201,7 @@ if ($SaveMatchingXml) {
 
 Add-Content -LiteralPath $resultsFile "Search complete."
 
+Write-Host ""
 Write-Host "Search complete."
 Write-Host "Files scanned: $filesScanned"
 Write-Host "Matches found: $matchesFound"
