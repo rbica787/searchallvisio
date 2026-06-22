@@ -1,19 +1,6 @@
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-$FolderPath = Read-Host "Enter the folder path to search"
-
-do {
-    $recursiveAnswer = Read-Host "Search subfolders recursively? Enter Y or N"
-    $recursiveAnswer = $recursiveAnswer.Trim().ToUpper()
-} while ($recursiveAnswer -ne "Y" -and $recursiveAnswer -ne "N")
-
-$RecursiveSearch = ($recursiveAnswer -eq "Y")
 $SaveMatchingXml = $true
-
-if (-not (Test-Path -LiteralPath $FolderPath)) {
-    Write-Error "Folder not found: $FolderPath"
-    exit 1
-}
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $resultsFile = Join-Path $scriptDir "searchresults.txt"
@@ -27,15 +14,45 @@ if (-not (Test-Path -LiteralPath $resultsFile)) {
     New-Item -Path $resultsFile -ItemType File -Force | Out-Null
 }
 
-if ($RecursiveSearch) {
-    $files = Get-ChildItem -LiteralPath $FolderPath -File -Recurse -Filter "*.vsdx" -ErrorAction SilentlyContinue
-} else {
-    $files = Get-ChildItem -LiteralPath $FolderPath -File -Filter "*.vsdx" -ErrorAction SilentlyContinue
-}
+function Get-SearchSettings {
+    do {
+        $folderPath = Read-Host "Enter the folder path to search"
 
-if (-not $files) {
-    Write-Host "No .vsdx files found."
-    exit 0
+        if (-not (Test-Path -LiteralPath $folderPath)) {
+            Write-Host "Folder not found: $folderPath"
+            Write-Host ""
+        }
+    } while (-not (Test-Path -LiteralPath $folderPath))
+
+    do {
+        $recursiveAnswer = Read-Host "Search subfolders recursively? Enter Y or N"
+        $recursiveAnswer = $recursiveAnswer.Trim().ToUpper()
+    } while ($recursiveAnswer -ne "Y" -and $recursiveAnswer -ne "N")
+
+    $recursiveSearch = ($recursiveAnswer -eq "Y")
+
+    if ($recursiveSearch) {
+        $files = Get-ChildItem -LiteralPath $folderPath -File -Recurse -Filter "*.vsdx" -ErrorAction SilentlyContinue
+    } else {
+        $files = Get-ChildItem -LiteralPath $folderPath -File -Filter "*.vsdx" -ErrorAction SilentlyContinue
+    }
+
+    if (-not $files) {
+        Write-Host ""
+        Write-Host "No .vsdx files found in this location."
+        Write-Host ""
+    } else {
+        Write-Host ""
+        Write-Host "File list loaded."
+        Write-Host "VSDX files found: $($files.Count)"
+        Write-Host ""
+    }
+
+    return @{
+        FolderPath = $folderPath
+        RecursiveSearch = $recursiveSearch
+        Files = $files
+    }
 }
 
 function Save-MatchingXmlEntry {
@@ -63,6 +80,7 @@ function Save-MatchingXmlEntry {
     $entryName = $entryName -replace '[\\:*?"<>|]', '_'
 
     $xmlPath = Join-Path $drawingFolder $entryName
+
     Set-Content -LiteralPath $xmlPath -Value $XmlText -Encoding UTF8
 }
 
@@ -130,14 +148,13 @@ function Test-VsdxForSearchString {
     }
 }
 
-do {
-
-    $SearchString = Read-Host "Enter the search string"
-
-    if ([string]::IsNullOrWhiteSpace($SearchString)) {
-        Write-Host "Search string cannot be blank."
-        continue
-    }
+function Invoke-VsdxSearch {
+    param(
+        [string]$FolderPath,
+        [bool]$RecursiveSearch,
+        [array]$Files,
+        [string]$SearchString
+    )
 
     $filesScanned = 0
     $matchesFound = 0
@@ -152,7 +169,7 @@ do {
     Add-Content -LiteralPath $resultsFile "Master pages ignored: True"
     Add-Content -LiteralPath $resultsFile "----------------------------------------"
 
-    foreach ($file in $files) {
+    foreach ($file in $Files) {
         $filesScanned++
 
         Write-Host "Scanning page XML only: $($file.FullName)"
@@ -204,13 +221,77 @@ do {
     }
 
     Write-Host ""
+}
+
+$settings = Get-SearchSettings
+
+while (-not $settings.Files -or $settings.Files.Count -eq 0) {
+    do {
+        $retryChoice = Read-Host "Would you like to choose a different folder/settings? Enter Y or N"
+        $retryChoice = $retryChoice.Trim().ToUpper()
+    } while ($retryChoice -ne "Y" -and $retryChoice -ne "N")
+
+    if ($retryChoice -eq "Y") {
+        $settings = Get-SearchSettings
+    } else {
+        Write-Host "Program finished."
+        exit 0
+    }
+}
+
+$FolderPath = $settings.FolderPath
+$RecursiveSearch = $settings.RecursiveSearch
+$files = $settings.Files
+
+do {
+    do {
+        $SearchString = Read-Host "Enter the search string"
+
+        if ([string]::IsNullOrWhiteSpace($SearchString)) {
+            Write-Host "Search string cannot be blank."
+            Write-Host ""
+        }
+    } while ([string]::IsNullOrWhiteSpace($SearchString))
+
+    Invoke-VsdxSearch `
+        -FolderPath $FolderPath `
+        -RecursiveSearch $RecursiveSearch `
+        -Files $files `
+        -SearchString $SearchString
 
     do {
-        $searchAgain = Read-Host "Would you like to search for a different string? Enter Y or N"
-        $searchAgain = $searchAgain.Trim().ToUpper()
-    } while ($searchAgain -ne "Y" -and $searchAgain -ne "N")
+        Write-Host "What would you like to do next?"
+        Write-Host "[S] Search another string using the same folder/settings"
+        Write-Host "[C] Change search folder/settings"
+        Write-Host "[E] Exit"
 
-} while ($searchAgain -eq "Y")
+        $nextChoice = Read-Host "Enter S, C, or E"
+        $nextChoice = $nextChoice.Trim().ToUpper()
+    } while ($nextChoice -ne "S" -and $nextChoice -ne "C" -and $nextChoice -ne "E")
+
+    if ($nextChoice -eq "C") {
+        $settings = Get-SearchSettings
+
+        while (-not $settings.Files -or $settings.Files.Count -eq 0) {
+            do {
+                $retryChoice = Read-Host "Would you like to choose a different folder/settings? Enter Y or N"
+                $retryChoice = $retryChoice.Trim().ToUpper()
+            } while ($retryChoice -ne "Y" -and $retryChoice -ne "N")
+
+            if ($retryChoice -eq "Y") {
+                $settings = Get-SearchSettings
+            } else {
+                Write-Host "Program finished."
+                exit 0
+            }
+        }
+
+        $FolderPath = $settings.FolderPath
+        $RecursiveSearch = $settings.RecursiveSearch
+        $files = $settings.Files
+    }
+
+} while ($nextChoice -ne "E")
 
 Write-Host ""
 Write-Host "Program finished."
