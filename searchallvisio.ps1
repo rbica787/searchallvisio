@@ -1,13 +1,6 @@
-# ==========================
-# VSDX XML SEARCH SCRIPT
-# Searches page XML only
-# Master pages are ignored
-# ==========================
-
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $FolderPath = Read-Host "Enter the folder path to search"
-$SearchString = Read-Host "Enter the search string"
 
 do {
     $recursiveAnswer = Read-Host "Search subfolders recursively? Enter Y or N"
@@ -15,16 +8,10 @@ do {
 } while ($recursiveAnswer -ne "Y" -and $recursiveAnswer -ne "N")
 
 $RecursiveSearch = ($recursiveAnswer -eq "Y")
-
 $SaveMatchingXml = $true
 
 if (-not (Test-Path -LiteralPath $FolderPath)) {
     Write-Error "Folder not found: $FolderPath"
-    exit 1
-}
-
-if ([string]::IsNullOrWhiteSpace($SearchString)) {
-    Write-Error "Search string cannot be blank."
     exit 1
 }
 
@@ -36,20 +23,9 @@ if ($SaveMatchingXml -and -not (Test-Path -LiteralPath $xmlOutputRoot)) {
     New-Item -Path $xmlOutputRoot -ItemType Directory -Force | Out-Null
 }
 
-if (Test-Path -LiteralPath $resultsFile) {
-    Add-Content -LiteralPath $resultsFile ""
-    Add-Content -LiteralPath $resultsFile ""
-} else {
+if (-not (Test-Path -LiteralPath $resultsFile)) {
     New-Item -Path $resultsFile -ItemType File -Force | Out-Null
 }
-
-Add-Content -LiteralPath $resultsFile "Search run: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Add-Content -LiteralPath $resultsFile "Search string: $SearchString"
-Add-Content -LiteralPath $resultsFile "Folder searched: $FolderPath"
-Add-Content -LiteralPath $resultsFile "Recursive search: $RecursiveSearch"
-Add-Content -LiteralPath $resultsFile "Search method: Direct .vsdx page XML parsing only"
-Add-Content -LiteralPath $resultsFile "Master pages ignored: True"
-Add-Content -LiteralPath $resultsFile "----------------------------------------"
 
 if ($RecursiveSearch) {
     $files = Get-ChildItem -LiteralPath $FolderPath -File -Recurse -Filter "*.vsdx" -ErrorAction SilentlyContinue
@@ -57,21 +33,27 @@ if ($RecursiveSearch) {
     $files = Get-ChildItem -LiteralPath $FolderPath -File -Filter "*.vsdx" -ErrorAction SilentlyContinue
 }
 
-$filesScanned = 0
-$matchesFound = 0
+if (-not $files) {
+    Write-Host "No .vsdx files found."
+    exit 0
+}
 
 function Save-MatchingXmlEntry {
     param(
         [System.IO.Compression.ZipArchiveEntry]$Entry,
         [string]$XmlText,
         [string]$DrawingName,
-        [string]$OutputRoot
+        [string]$OutputRoot,
+        [string]$SearchString
     )
 
     $safeDrawingName = [System.IO.Path]::GetFileNameWithoutExtension($DrawingName)
     $safeDrawingName = $safeDrawingName -replace '[\\/:*?"<>|]', '_'
 
-    $drawingFolder = Join-Path $OutputRoot $safeDrawingName
+    $safeSearchString = $SearchString -replace '[\\/:*?"<>|]', '_'
+
+    $drawingFolder = Join-Path $OutputRoot $safeSearchString
+    $drawingFolder = Join-Path $drawingFolder $safeDrawingName
 
     if (-not (Test-Path -LiteralPath $drawingFolder)) {
         New-Item -Path $drawingFolder -ItemType Directory -Force | Out-Null
@@ -81,7 +63,6 @@ function Save-MatchingXmlEntry {
     $entryName = $entryName -replace '[\\:*?"<>|]', '_'
 
     $xmlPath = Join-Path $drawingFolder $entryName
-
     Set-Content -LiteralPath $xmlPath -Value $XmlText -Encoding UTF8
 }
 
@@ -124,7 +105,8 @@ function Test-VsdxForSearchString {
                             -Entry $entry `
                             -XmlText $xmlText `
                             -DrawingName $File.Name `
-                            -OutputRoot $XmlOutputRoot
+                            -OutputRoot $XmlOutputRoot `
+                            -SearchString $SearchString
                     }
                 }
             } catch {}
@@ -148,65 +130,87 @@ function Test-VsdxForSearchString {
     }
 }
 
-if (-not $files) {
-    Write-Host "No .vsdx files found."
+do {
 
-    Add-Content -LiteralPath $resultsFile "No .vsdx files found."
-    Add-Content -LiteralPath $resultsFile "----------------------------------------"
-    Add-Content -LiteralPath $resultsFile "Files scanned: 0"
-    Add-Content -LiteralPath $resultsFile "Matches found: 0"
-    Add-Content -LiteralPath $resultsFile "Search complete."
+    $SearchString = Read-Host "Enter the search string"
 
-    exit 0
-}
-
-foreach ($file in $files) {
-    $filesScanned++
-
-    Write-Host "Scanning page XML only: $($file.FullName)"
-
-    $result = Test-VsdxForSearchString `
-        -File $file `
-        -SearchString $SearchString `
-        -SaveMatchingXml $SaveMatchingXml `
-        -XmlOutputRoot $xmlOutputRoot
-
-    if ($result.Error) {
-        Write-Warning "Could not read as .vsdx package: $($file.FullName)"
-        Add-Content -LiteralPath $resultsFile "Could not read: $($file.Name)"
+    if ([string]::IsNullOrWhiteSpace($SearchString)) {
+        Write-Host "Search string cannot be blank."
         continue
     }
 
-    if ($result.Found) {
-        $matchesFound++
+    $filesScanned = 0
+    $matchesFound = 0
 
-        Write-Host "FOUND in: $($file.Name)"
-        Add-Content -LiteralPath $resultsFile $file.Name
+    Add-Content -LiteralPath $resultsFile ""
+    Add-Content -LiteralPath $resultsFile ""
+    Add-Content -LiteralPath $resultsFile "Search run: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Add-Content -LiteralPath $resultsFile "Search string: $SearchString"
+    Add-Content -LiteralPath $resultsFile "Folder searched: $FolderPath"
+    Add-Content -LiteralPath $resultsFile "Recursive search: $RecursiveSearch"
+    Add-Content -LiteralPath $resultsFile "Search method: Direct .vsdx page XML parsing only"
+    Add-Content -LiteralPath $resultsFile "Master pages ignored: True"
+    Add-Content -LiteralPath $resultsFile "----------------------------------------"
 
-        foreach ($entry in $result.Entries) {
-            Add-Content -LiteralPath $resultsFile "    Page XML match: $entry"
+    foreach ($file in $files) {
+        $filesScanned++
+
+        Write-Host "Scanning page XML only: $($file.FullName)"
+
+        $result = Test-VsdxForSearchString `
+            -File $file `
+            -SearchString $SearchString `
+            -SaveMatchingXml $SaveMatchingXml `
+            -XmlOutputRoot $xmlOutputRoot
+
+        if ($result.Error) {
+            Write-Warning "Could not read as .vsdx package: $($file.FullName)"
+            Add-Content -LiteralPath $resultsFile "Could not read: $($file.Name)"
+            continue
         }
-    } else {
-        Write-Host "Not found in: $($file.Name)."
+
+        if ($result.Found) {
+            $matchesFound++
+
+            Write-Host "FOUND in: $($file.Name)"
+            Add-Content -LiteralPath $resultsFile $file.Name
+
+            foreach ($entry in $result.Entries) {
+                Add-Content -LiteralPath $resultsFile "    Page XML match: $entry"
+            }
+        } else {
+            Write-Host "Not found in: $($file.Name)."
+        }
     }
-}
 
-Add-Content -LiteralPath $resultsFile "----------------------------------------"
-Add-Content -LiteralPath $resultsFile "Files scanned: $filesScanned"
-Add-Content -LiteralPath $resultsFile "Matches found: $matchesFound"
+    Add-Content -LiteralPath $resultsFile "----------------------------------------"
+    Add-Content -LiteralPath $resultsFile "Files scanned: $filesScanned"
+    Add-Content -LiteralPath $resultsFile "Matches found: $matchesFound"
 
-if ($SaveMatchingXml) {
-    Add-Content -LiteralPath $resultsFile "Extracted matching XML folder: $xmlOutputRoot"
-}
+    if ($SaveMatchingXml) {
+        Add-Content -LiteralPath $resultsFile "Extracted matching XML folder: $xmlOutputRoot"
+    }
 
-Add-Content -LiteralPath $resultsFile "Search complete."
+    Add-Content -LiteralPath $resultsFile "Search complete."
+
+    Write-Host ""
+    Write-Host "Search complete."
+    Write-Host "Files scanned: $filesScanned"
+    Write-Host "Matches found: $matchesFound"
+    Write-Host "Results saved to: $resultsFile"
+
+    if ($SaveMatchingXml) {
+        Write-Host "Matching page XML saved to: $xmlOutputRoot"
+    }
+
+    Write-Host ""
+
+    do {
+        $searchAgain = Read-Host "Would you like to search for a different string? Enter Y or N"
+        $searchAgain = $searchAgain.Trim().ToUpper()
+    } while ($searchAgain -ne "Y" -and $searchAgain -ne "N")
+
+} while ($searchAgain -eq "Y")
 
 Write-Host ""
-Write-Host "Search complete."
-Write-Host "Files scanned: $filesScanned"
-Write-Host "Matches found: $matchesFound"
-Write-Host "Results saved to: $resultsFile"
-
-if ($SaveMatchingXml) {
-    Write-Host "Matching page XML saved to: $xmlOutputRoot"
-}
+Write-Host "Program finished."
