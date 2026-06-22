@@ -1,14 +1,7 @@
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-$SaveMatchingXml = $true
-
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $resultsFile = Join-Path $scriptDir "searchresults.txt"
-$xmlOutputRoot = Join-Path $scriptDir "ExtractedXmlMatches"
-
-if ($SaveMatchingXml -and -not (Test-Path -LiteralPath $xmlOutputRoot)) {
-    New-Item -Path $xmlOutputRoot -ItemType Directory -Force | Out-Null
-}
 
 if (-not (Test-Path -LiteralPath $resultsFile)) {
     New-Item -Path $resultsFile -ItemType File -Force | Out-Null
@@ -55,41 +48,10 @@ function Get-SearchSettings {
     }
 }
 
-function Save-MatchingXmlEntry {
-    param(
-        [System.IO.Compression.ZipArchiveEntry]$Entry,
-        [string]$XmlText,
-        [string]$DrawingName,
-        [string]$OutputRoot,
-        [string]$SearchString
-    )
-
-    $safeDrawingName = [System.IO.Path]::GetFileNameWithoutExtension($DrawingName)
-    $safeDrawingName = $safeDrawingName -replace '[\\/:*?"<>|]', '_'
-
-    $safeSearchString = $SearchString -replace '[\\/:*?"<>|]', '_'
-
-    $drawingFolder = Join-Path $OutputRoot $safeSearchString
-    $drawingFolder = Join-Path $drawingFolder $safeDrawingName
-
-    if (-not (Test-Path -LiteralPath $drawingFolder)) {
-        New-Item -Path $drawingFolder -ItemType Directory -Force | Out-Null
-    }
-
-    $entryName = $Entry.FullName -replace '/', '_'
-    $entryName = $entryName -replace '[\\:*?"<>|]', '_'
-
-    $xmlPath = Join-Path $drawingFolder $entryName
-
-    Set-Content -LiteralPath $xmlPath -Value $XmlText -Encoding UTF8
-}
-
 function Test-VsdxForSearchString {
     param(
         [System.IO.FileInfo]$File,
-        [string]$SearchString,
-        [bool]$SaveMatchingXml,
-        [string]$XmlOutputRoot
+        [string]$SearchString
     )
 
     $archive = $null
@@ -111,23 +73,25 @@ function Test-VsdxForSearchString {
             try {
                 $stream = $entry.Open()
                 $reader = New-Object System.IO.StreamReader($stream)
-                $xmlText = $reader.ReadToEnd()
-                $reader.Close()
-                $stream.Close()
 
-                if ($xmlText.ToLower().Contains($needle)) {
-                    $matchedEntries += $entry.FullName
-
-                    if ($SaveMatchingXml) {
-                        Save-MatchingXmlEntry `
-                            -Entry $entry `
-                            -XmlText $xmlText `
-                            -DrawingName $File.Name `
-                            -OutputRoot $XmlOutputRoot `
-                            -SearchString $SearchString
+                while (($line = $reader.ReadLine()) -ne $null) {
+                    if ($line.ToLower().Contains($needle)) {
+                        $matchedEntries += $entry.FullName
+                        break
                     }
                 }
-            } catch {}
+
+                $reader.Close()
+                $stream.Close()
+            } catch {
+                if ($reader) {
+                    $reader.Close()
+                }
+
+                if ($stream) {
+                    $stream.Close()
+                }
+            }
         }
     } catch {
         return @{
@@ -165,8 +129,6 @@ function Invoke-VsdxSearch {
     Add-Content -LiteralPath $resultsFile "Search string: $SearchString"
     Add-Content -LiteralPath $resultsFile "Folder searched: $FolderPath"
     Add-Content -LiteralPath $resultsFile "Recursive search: $RecursiveSearch"
-    Add-Content -LiteralPath $resultsFile "Search method: Direct .vsdx page XML parsing only"
-    Add-Content -LiteralPath $resultsFile "Master pages ignored: True"
     Add-Content -LiteralPath $resultsFile "----------------------------------------"
 
     foreach ($file in $Files) {
@@ -176,9 +138,7 @@ function Invoke-VsdxSearch {
 
         $result = Test-VsdxForSearchString `
             -File $file `
-            -SearchString $SearchString `
-            -SaveMatchingXml $SaveMatchingXml `
-            -XmlOutputRoot $xmlOutputRoot
+            -SearchString $SearchString
 
         if ($result.Error) {
             Write-Warning "Could not read as .vsdx package: $($file.FullName)"
@@ -203,11 +163,6 @@ function Invoke-VsdxSearch {
     Add-Content -LiteralPath $resultsFile "----------------------------------------"
     Add-Content -LiteralPath $resultsFile "Files scanned: $filesScanned"
     Add-Content -LiteralPath $resultsFile "Matches found: $matchesFound"
-
-    if ($SaveMatchingXml) {
-        Add-Content -LiteralPath $resultsFile "Extracted matching XML folder: $xmlOutputRoot"
-    }
-
     Add-Content -LiteralPath $resultsFile "Search complete."
 
     Write-Host ""
@@ -215,11 +170,6 @@ function Invoke-VsdxSearch {
     Write-Host "Files scanned: $filesScanned"
     Write-Host "Matches found: $matchesFound"
     Write-Host "Results saved to: $resultsFile"
-
-    if ($SaveMatchingXml) {
-        Write-Host "Matching page XML saved to: $xmlOutputRoot"
-    }
-
     Write-Host ""
 }
 
